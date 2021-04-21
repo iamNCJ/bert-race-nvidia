@@ -1,2 +1,2 @@
 # bert-race-nvidia
- Race with Bert Language Model 
+ Race with Bert Language Model Tuned by NVIDIA
