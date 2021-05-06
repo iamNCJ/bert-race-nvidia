@@ -3,6 +3,8 @@ from typing import Any, List
 import torch
 import torch.nn as nn
 from transformers import BertConfig, BertForMultipleChoice, AdamW, get_linear_schedule_with_warmup
+from apex import amp
+from apex.parallel import DistributedDataParallel
 
 
 class BertForRace(nn.Module):
@@ -65,6 +67,9 @@ class BertForRace(nn.Module):
             optimizer_grouped_parameters,
             lr=self.learning_rate
         )
+
+        self.model, optimizer = amp.initialize(self.model, optimizer, opt_level="O1")
+        self.model = DistributedDataParallel(self.model)
 
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=self.warmup_steps, num_training_steps=self.total_steps

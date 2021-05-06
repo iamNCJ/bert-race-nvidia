@@ -63,6 +63,7 @@ if __name__ == '__main__':
     ).setup("fit")
 
     optimizer, scheduler = model.configure_optimizers()
+    optimizer = optimizer[0]
     scheduler = scheduler['scheduler']
 
     model.model.train()
@@ -72,7 +73,8 @@ if __name__ == '__main__':
     for epoch in range(num_epochs):
         for batch_idx, batch in enumerate(dm):
             loss = model.training_step(batch, batch_idx)
-            loss.backward()
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
 
             grad_clipper.step(amp.master_params(optimizer))
 
