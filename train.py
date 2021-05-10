@@ -1,21 +1,8 @@
-# dm = datamodule()
-# init dm
-# model = bertForRace()
-# init model, load pretrained weights
-
-# for i in epochs:
-#  # train
-#   for batch in dm:
-#     loss = model(batch)
-#     optimizer.step()
-#  # val
-#   model.eval(batch in val)
-# ...
-
 import time
 import logging
 import random
-from tqdm import tqdm, trange
+from tqdm import tqdm
+import os
 
 from data.RACEDataModule import RACEDataModule
 from model.BertForRace import BertForRace
@@ -26,16 +13,26 @@ from tensorboardX import SummaryWriter
 import torch
 import torch.nn
 
+from utils.distributed import is_main_process
+
+torch._C._jit_set_profiling_mode(False)
+torch._C._jit_set_profiling_executor(False)
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-if __name__ == '__main__':
 
+
+if __name__ == '__main__':
+    ete_start = time.time()
     # attributes
     local_rank =
-    no_cuda = 
-    seed = 
-    num_epochs = 
-    train_batch_size = 
+    no_cuda =
+    seed =
+    num_epochs =
+    train_batch_size =
 
     if local_rank == -1 or no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
@@ -85,8 +82,9 @@ if __name__ == '__main__':
 
     grad_clipper = GradientClipper(1.0)
 
+    global_step = 0
     train_start = time.time()
-    writer = SummaryWriter(os.path.join(args.output_dir, "ascxx"))
+    writer = SummaryWriter(os.path.join(args.output_dir, "asc001"))
 
     if is_main_process():
         logger.info("***** Running training *****")
@@ -100,11 +98,11 @@ if __name__ == '__main__':
         tr_loss = 0
         train_iter = tqdm(train_dataloader, disable=False) if is_main_process() else train_dataloader
         if is_main_process():
-            train_iter.set_description("Trianing Epoch: {}/{}".format(ep+1, int(args.num_train_epochs)))
+            train_iter.set_description("Trianing Epoch: {}/{}".format(ep + 1, int(args.num_train_epochs)))
         for step, batch in enumerate(train_iter):
             loss, correct = model.compute(batch)
             if n_gpu > 1:
-                loss = loss.mean() # mean() to average on multi-gpu.
+                loss = loss.mean()  # mean() to average on multi-gpu.
             with amp.scale_loss(loss, optimizer) as scaled_loss:
                 scaled_loss.backward()
             tr_loss += loss.item()
@@ -116,13 +114,14 @@ if __name__ == '__main__':
 
             optimizer.step()
             optimizer.zero_grad()
+            global_step += 1
             writer.add_scalar('loss', loss.item(), global_step=global_step)
 
     finish_time = time.time()
     writer.close()
     # Save a trained model
     if is_main_process():
-        logger.info("ete_time: {}, training_time: {}".format(finish_time-ete_start, finish_time-train_start))
+        logger.info("ete_time: {}, training_time: {}".format(finish_time - ete_start, finish_time - train_start))
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
         output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
         torch.save(model_to_save.state_dict(), output_model_file)
