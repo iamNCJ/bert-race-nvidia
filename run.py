@@ -6,15 +6,16 @@ from tqdm import tqdm
 import numpy as np
 import torch
 from apex import amp
+from apex.optimizers import FusedAdam
+from apex.parallel import DistributedDataParallel as DDP
 
 from data.RACEDataModule import RACEDataModule
-from nvidia_bert.modeling import BertForMultipleChoice
-from nvidia_bert.optimization import BertAdam
-from nvidia_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
+from modeling import BertForMultipleChoice
+from file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 
-from nvidia_bert.utils import is_main_process
-from utils.GradientClipper import GradientClipper
-from utils.arg_parser import get_parser
+from utils import is_main_process
+from helpers.GradientClipper import GradientClipper
+from helpers.arg_parser import get_parser
 
 from tensorboardX import SummaryWriter
 
@@ -104,10 +105,19 @@ def main():
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
     ]
     t_total = num_train_steps
-    optimizer = BertAdam(optimizer_grouped_parameters,
-                         lr=args.learning_rate,
-                         warmup=args.warmup_proportion,
-                         t_total=t_total)
+    optimizer = FusedAdam(
+        optimizer_grouped_parameters,
+        lr=args.learning_rate,
+        bias_correction=False,
+    )
+    model, optimizer = amp.initialize(
+        model,
+        optimizers=optimizer,
+        opt_level="O2",
+        keep_batchnorm_fp32=False,
+        loss_scale="dynamic" if args.loss_scale == 0 else args.loss_scale,
+    )
+    model = DDP(model)
 
     global_step = 0
     train_start = time.time()

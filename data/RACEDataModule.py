@@ -6,7 +6,7 @@ import datasets
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from torch.utils.data import DataLoader, RandomSampler, SequentialSampler
+from torch.utils.data import DataLoader, DistributedSampler, SequentialSampler
 from transformers import BertTokenizerFast
 from rouge_score import rouge_scorer
 
@@ -65,7 +65,7 @@ class RACEDataModule(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.dataset['train'],
-                          sampler=RandomSampler(self.dataset['train']),
+                          sampler=DistributedSampler(self.dataset['train']),
                           batch_size=self.train_batch_size,
                           num_workers=self.num_workers)
 

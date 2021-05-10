@@ -118,3 +118,12 @@ dmypy.json
 
 # PyCharm
 .idea
+
+# vscode
+.vscode
+
+# TF code
+tensorflow_code
+
+# Models
+models

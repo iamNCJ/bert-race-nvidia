@@ -1,20 +1,3 @@
-# coding=utf-8
-# Copyright 2018 The Google AI Language Team Authors and The HugginFace Inc. team.
-# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-"""BERT finetuning runner."""
-
 from __future__ import absolute_import, division, print_function
 
 import pickle
@@ -26,7 +9,6 @@ import wget
 import json
 import time
 
-import dllogger
 import numpy as np
 import torch
 from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
@@ -43,256 +25,23 @@ from apex import amp
 from sklearn.metrics import matthews_corrcoef, f1_score
 from utils import (is_main_process, mkdir_by_main_process, format_step,
                    get_world_size)
-from processors.glue import PROCESSORS, convert_examples_to_features
+
+from helpers.arg_parser import parse_args
+
 
 torch._C._jit_set_profiling_mode(False)
 torch._C._jit_set_profiling_executor(False)
 
-logging.basicConfig(
-    format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-    datefmt='%m/%d/%Y %H:%M:%S',
-    level=logging.INFO,
-)
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def compute_metrics(task_name, preds, labels):
-    assert len(preds) == len(labels)
-    if task_name == "cola":
-        return {"mcc": matthews_corrcoef(labels, preds)}
-    elif task_name == "sst-2":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "mrpc":
-        return acc_and_f1(preds, labels)
-    elif task_name == "sts-b":
-        return pearson_and_spearman(preds, labels)
-    elif task_name == "qqp":
-        return acc_and_f1(preds, labels)
-    elif task_name == "mnli":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "mnli-mm":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "qnli":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "rte":
-        return {"acc": simple_accuracy(preds, labels)}
-    elif task_name == "wnli":
-        return {"acc": simple_accuracy(preds, labels)}
-    else:
-        raise KeyError(task_name)
-
-
-def simple_accuracy(preds, labels):
-    return (preds == labels).mean()
-
-
-def acc_and_f1(preds, labels):
-    acc = simple_accuracy(preds, labels)
-    f1 = f1_score(y_true=labels, y_pred=preds)
-    return {
-        "acc": acc,
-        "f1": f1,
-        "acc_and_f1": (acc + f1) / 2,
-    }
 
 
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs == labels)
-
-
-from apex.multi_tensor_apply import multi_tensor_applier
-
-
-class GradientClipper:
-    """
-    Clips gradient norm of an iterable of parameters.
-    """
-
-    def __init__(self, max_grad_norm):
-        self.max_norm = max_grad_norm
-        if multi_tensor_applier.available:
-            import amp_C
-            self._overflow_buf = torch.cuda.IntTensor([0])
-            self.multi_tensor_l2norm = amp_C.multi_tensor_l2norm
-            self.multi_tensor_scale = amp_C.multi_tensor_scale
-        else:
-            raise RuntimeError('Gradient clipping requires cuda extensions')
-
-    def step(self, parameters):
-        l = [p.grad for p in parameters if p.grad is not None]
-        total_norm, _ = multi_tensor_applier(
-            self.multi_tensor_l2norm,
-            self._overflow_buf,
-            [l],
-            False,
-        )
-        total_norm = total_norm.item()
-        if (total_norm == float('inf')): return
-        clip_coef = self.max_norm / (total_norm + 1e-6)
-        if clip_coef < 1:
-            multi_tensor_applier(
-                self.multi_tensor_scale,
-                self._overflow_buf,
-                [l, l],
-                clip_coef,
-            )
-
-
-def parse_args(parser=argparse.ArgumentParser()):
-    ## Required parameters
-    parser.add_argument(
-        "--data_dir",
-        default=None,
-        type=str,
-        required=True,
-        help="The input data dir. Should contain the .tsv files (or other data "
-        "files) for the task.",
-    )
-    parser.add_argument(
-        "--bert_model",
-        default=None,
-        type=str,
-        required=True,
-        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-        "bert-large-uncased, bert-base-cased, bert-large-cased, "
-        "bert-base-multilingual-uncased, bert-base-multilingual-cased, "
-        "bert-base-chinese.",
-    )
-    parser.add_argument(
-        "--task_name",
-        default=None,
-        type=str,
-        required=True,
-        choices=PROCESSORS.keys(),
-        help="The name of the task to train.",
-    )
-    parser.add_argument(
-        "--output_dir",
-        default=None,
-        type=str,
-        required=True,
-        help="The output directory where the model predictions and checkpoints "
-        "will be written.",
-    )
-    parser.add_argument(
-        "--init_checkpoint",
-        default=None,
-        type=str,
-        required=True,
-        help="The checkpoint file from pretraining",
-    )
-
-    ## Other parameters
-    parser.add_argument(
-        "--max_seq_length",
-        default=128,
-        type=int,
-        help="The maximum total input sequence length after WordPiece "
-        "tokenization. \n"
-        "Sequences longer than this will be truncated, and sequences shorter \n"
-        "than this will be padded.",
-    )
-    parser.add_argument("--do_train",
-                        action='store_true',
-                        help="Whether to run training.")
-    parser.add_argument("--do_eval",
-                        action='store_true',
-                        help="Whether to get model-task performance on the dev"
-                        " set by running eval.")
-    parser.add_argument("--do_predict",
-                        action='store_true',
-                        help="Whether to output prediction results on the dev "
-                        "set by running eval.")
-    parser.add_argument("--do_lower_case",
-                        action='store_true',
-                        help="Set this flag if you are using an uncased model.")
-    parser.add_argument("--train_batch_size",
-                        default=32,
-                        type=int,
-                        help="Batch size per GPU for training.")
-    parser.add_argument("--eval_batch_size",
-                        default=8,
-                        type=int,
-                        help="Batch size per GPU for eval.")
-    parser.add_argument("--learning_rate",
-                        default=5e-5,
-                        type=float,
-                        help="The initial learning rate for Adam.")
-    parser.add_argument("--num_train_epochs",
-                        default=3.0,
-                        type=float,
-                        help="Total number of training epochs to perform.")
-    parser.add_argument("--max_steps",
-                        default=-1.0,
-                        type=float,
-                        help="Total number of training steps to perform.")
-    parser.add_argument(
-        "--warmup_proportion",
-        default=0.1,
-        type=float,
-        help="Proportion of training to perform linear learning rate warmup "
-        "for. E.g., 0.1 = 10%% of training.",
-    )
-    parser.add_argument("--no_cuda",
-                        action='store_true',
-                        help="Whether not to use CUDA when available")
-    parser.add_argument("--local_rank",
-                        type=int,
-                        default=-1,
-                        help="local_rank for distributed training on gpus")
-    parser.add_argument('--seed',
-                        type=int,
-                        default=1,
-                        help="random seed for initialization")
-    parser.add_argument(
-        '--gradient_accumulation_steps',
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a "
-        "backward/update pass.")
-    parser.add_argument(
-        '--fp16',
-        action='store_true',
-        help="Mixed precision training",
-    )
-    parser.add_argument(
-        '--amp',
-        action='store_true',
-        help="Mixed precision training",
-    )
-    parser.add_argument(
-        '--loss_scale',
-        type=float,
-        default=0,
-        help="Loss scaling to improve fp16 numeric stability. Only used when "
-        "fp16 set to True.\n"
-        "0 (default value): dynamic loss scaling.\n"
-        "Positive power of 2: static loss scaling value.\n",
-    )
-    parser.add_argument('--server_ip',
-                        type=str,
-                        default='',
-                        help="Can be used for distant debugging.")
-    parser.add_argument('--server_port',
-                        type=str,
-                        default='',
-                        help="Can be used for distant debugging.")
-    parser.add_argument('--vocab_file',
-                        type=str,
-                        default=None,
-                        required=True,
-                        help="Vocabulary mapping/file BERT was pretrainined on")
-    parser.add_argument("--config_file",
-                        default=None,
-                        type=str,
-                        required=True,
-                        help="The BERT model config")
-    parser.add_argument('--skip_checkpoint',
-                        default=False,
-                        action='store_true',
-                        help="Whether to save checkpoints")
-    return parser.parse_args()
 
 
 def init_optimizer_and_amp(model, learning_rate, loss_scale, warmup_proportion,
@@ -358,67 +107,6 @@ def init_optimizer_and_amp(model, learning_rate, loss_scale, warmup_proportion,
     return model, optimizer, scheduler
 
 
-def gen_tensor_dataset(features):
-    all_input_ids = torch.tensor(
-        [f.input_ids for f in features],
-        dtype=torch.long,
-    )
-    all_input_mask = torch.tensor(
-        [f.input_mask for f in features],
-        dtype=torch.long,
-    )
-    all_segment_ids = torch.tensor(
-        [f.segment_ids for f in features],
-        dtype=torch.long,
-    )
-    all_label_ids = torch.tensor(
-        [f.label_id for f in features],
-        dtype=torch.long,
-    )
-    return TensorDataset(
-        all_input_ids,
-        all_input_mask,
-        all_segment_ids,
-        all_label_ids,
-    )
-
-
-def get_train_features(data_dir, bert_model, max_seq_length, do_lower_case,
-                       local_rank, train_batch_size,
-                       gradient_accumulation_steps, num_train_epochs, tokenizer,
-                       processor):
-    cached_train_features_file = os.path.join(
-        data_dir,
-        '{0}_{1}_{2}'.format(
-            list(filter(None, bert_model.split('/'))).pop(),
-            str(max_seq_length),
-            str(do_lower_case),
-        ),
-    )
-    train_features = None
-    try:
-        with open(cached_train_features_file, "rb") as reader:
-            train_features = pickle.load(reader)
-        logger.info("Loaded pre-processed features from {}".format(
-            cached_train_features_file))
-    except:
-        logger.info("Did not find pre-processed features from {}".format(
-            cached_train_features_file))
-        train_examples = processor.get_train_examples(data_dir)
-        train_features, _ = convert_examples_to_features(
-            train_examples,
-            processor.get_labels(),
-            max_seq_length,
-            tokenizer,
-        )
-        if is_main_process():
-            logger.info("  Saving train features into cached file %s",
-                        cached_train_features_file)
-            with open(cached_train_features_file, "wb") as writer:
-                pickle.dump(train_features, writer)
-    return train_features
-
-
 def dump_predictions(path, label_map, preds, examples):
     label_rmap = {label_idx: label for label, label_idx in label_map.items()}
     predictions = {
@@ -472,22 +160,6 @@ def main(args):
                            "empty.".format(args.output_dir))
     mkdir_by_main_process(args.output_dir)
 
-    if is_main_process():
-        dllogger.init(backends=[
-            dllogger.JSONStreamBackend(
-                verbosity=dllogger.Verbosity.VERBOSE,
-                filename=os.path.join(args.output_dir, 'dllogger.json'),
-            ),
-            dllogger.StdOutBackend(
-                verbosity=dllogger.Verbosity.VERBOSE,
-                step_format=format_step,
-            ),
-        ])
-    else:
-        dllogger.init(backends=[])
-
-    dllogger.log(step="PARAMETER", data={"Config": [str(args)]})
-
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, "
                          "should be >= 1".format(
@@ -507,10 +179,7 @@ def main(args):
     torch.manual_seed(args.seed)
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
-    dllogger.log(step="PARAMETER", data={"SEED": args.seed})
 
-    processor = PROCESSORS[args.task_name]()
-    num_labels = len(processor.get_labels())
 
     #tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
     tokenizer = BertTokenizer(
@@ -557,13 +226,6 @@ def main(args):
         strict=False,
     )
     logger.info("USED CHECKPOINT from {}".format(args.init_checkpoint))
-    dllogger.log(
-        step="PARAMETER",
-        data={
-            "num_parameters":
-                sum([p.numel() for p in model.parameters() if p.requires_grad]),
-        },
-    )
 
     model.to(device)
     # Prepare optimizer
@@ -783,24 +445,6 @@ def main(args):
             logger.info("  %s = %s", key, str(results[key]))
         with open(os.path.join(args.output_dir, "results.txt"), "w") as writer:
             json.dump(results, writer)
-        dllogger_queries_from_results = {
-            'exact_match': 'acc',
-            'F1': 'f1',
-            'e2e_train_time': 'train:latency',
-            'training_sequences_per_second': 'train:throughput',
-            'e2e_inference_time': ('infer:latency(ms):sum', lambda x: x / 1000),
-            'inference_sequences_per_second': 'infer:throughput(samples/s):avg',
-        }
-        for key, query in dllogger_queries_from_results.items():
-            results_key, convert = (query if isinstance(query, tuple) else
-                                    (query, lambda x: x))
-            if results_key not in results:
-                continue
-            dllogger.log(
-                step=tuple(),
-                data={key: convert(results[results_key])},
-            )
-    dllogger.flush()
     return results
 
 
