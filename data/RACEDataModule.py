@@ -122,20 +122,14 @@ class RACEDataModule(pl.LightningDataModule):
 
             article = '.'.join([sentences[i] for i in sorted(final_indices)])
 
-        question_len = len(tokenizer.tokenize(question))
-        max_repeat_time = max_seq_length // 512 + 1
-        position_ids = np.concatenate([np.arange(0, 512)] * max_repeat_time)[0:max_seq_length]
-        position_ids = np.vstack([position_ids] * 4)
-
         option: str
         for option in x["options"]:
-            question_option = question + option
-            # if question.find("_") != -1:
-            #     # fill in the banks questions
-            #     question_option = question.replace("_", option)
-            # else:
-            #     question_option = question + " [SEP] " + option
-            option_len = len(tokenizer.tokenize(option))
+            # question_option = question + option
+            if question.find("_") != -1:
+                # fill in the banks questions
+                question_option = question.replace("_", option)
+            else:
+                question_option = question + " [SEP] " + option
 
             inputs = tokenizer(
                 article,
@@ -146,11 +140,6 @@ class RACEDataModule(pl.LightningDataModule):
                 padding='max_length',
                 return_tensors='pt'
             )
-            token_type_ids = np.array(inputs['token_type_ids'])
-            inputs['article_len'] = int(np.where(token_type_ids == 1)[1][0]) - 2
-            # inputs['question_len'] = question_len
-            inputs['option_len'] = option_len
-            # inputs['position_ids'] = position_ids[0:max_seq_length]
 
             choices_features.append(inputs)
 
@@ -162,11 +151,6 @@ class RACEDataModule(pl.LightningDataModule):
             "input_ids": torch.cat([cf["input_ids"] for cf in choices_features]).reshape(-1),
             "attention_mask": torch.cat([cf["attention_mask"] for cf in choices_features]).reshape(-1),
             "token_type_ids": torch.cat([cf["token_type_ids"] for cf in choices_features]).reshape(-1),
-            "position_ids": torch.tensor(position_ids).reshape(-1),
-            "article_len": torch.tensor([cf["article_len"] for cf in choices_features]).long(),
-            "question_len": torch.tensor([question_len] * 4).long(),
-            # "question_len": torch.Tensor([cf["question_len"] for cf in choices_features]),
-            "option_len": torch.tensor([cf["option_len"] for cf in choices_features]).long(),
         }
 
 
