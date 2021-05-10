@@ -127,12 +127,11 @@ def main():
             if is_main_process():
                 train_iter.set_description("Trianing Epoch: {}/{}".format(ep + 1, int(args.num_train_epochs)))
             for step, batch in enumerate(train_iter):
-                # batch = tuple(t.to(device) for t in batch)
                 loss = model(
-                    input_ids=batch['input_ids'].reshape(batch['input_ids'].shape[0], 4, -1),
-                    token_type_ids=batch['token_type_ids'].reshape(batch['token_type_ids'].shape[0], 4, -1),
-                    attention_mask=batch['attention_mask'].reshape(batch['attention_mask'].shape[0], 4, -1),
-                    labels=batch['label'],
+                    input_ids=batch['input_ids'].to(device).reshape(batch['input_ids'].shape[0], 4, -1),
+                    token_type_ids=batch['token_type_ids'].to(device).reshape(batch['token_type_ids'].shape[0], 4, -1),
+                    attention_mask=batch['attention_mask'].to(device).reshape(batch['attention_mask'].shape[0], 4, -1),
+                    labels=batch['label'].to(device),
                 )
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
